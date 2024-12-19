@@ -1,0 +1,93 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<h1 class="mb-4">Калькулятор ИМТ</h1>
+
+<form id="bmiForm">
+    <div class="mb-3">
+        <label for="weight" class="form-label">Вес (кг):</label>
+        <input type="number" step="0.1" name="weight" class="form-control" id="weight" required>
+    </div>
+    <div class="mb-3">
+        <label for="height" class="form-label">Рост (см):</label>
+        <input type="number" step="0.1" name="height" class="form-control" id="height" required>
+    </div>
+    <button type="submit" class="btn btn-primary">Рассчитать ИМТ</button>
+</form>
+
+<div id="bmiResult" class="mt-4"></div>
+
+<hr>
+<h2>Записи ИМТ</h2>
+<table class="table table-striped mt-3">
+    <thead>
+        <tr>
+            <th>#</th>
+            <th>Вес (кг)</th>
+            <th>Рост (м)</th>
+            <th>ИМТ</th>
+            <th>Дата</th>
+            <th>Действия</th>
+        </tr>
+    </thead>
+    <tbody id="bmiTable">
+        {% for record in records %}
+        <tr>
+            <td>{{ loop.index }}</td>
+            <td>{{ record.weight }}</td>
+            <td>{{ record.height }}</td>
+            <td>{{ record.bmi|round(2) }}</td>
+            <td>{{ record.created_at.strftime('%Y-%m-%d') }}</td>
+            <td>
+                <button class="btn btn-danger btn-sm delete-btn" data-id="{{ record.id }}">Удалить</button>
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+
+<script>
+document.getElementById("bmiForm").addEventListener("submit", function (e) {
+    e.preventDefault();
+
+    const weight = document.getElementById("weight").value;
+    const height = document.getElementById("height").value;
+
+    fetch("{{ url_for('calculate_bmi') }}", {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ weight: weight, height: height })
+    })
+    .then(response => response.json())
+    .then(data => {
+        document.getElementById("bmiResult").innerHTML = `<h4>Ваш ИМТ: ${data.bmi} (${data.category})</h4>`;
+        const table = document.getElementById("bmiTable");
+        const newRow = document.createElement("tr");
+        newRow.innerHTML = `
+            <td>${document.querySelectorAll("#bmiTable tr").length + 1}</td>
+            <td>${data.weight}</td>
+            <td>${data.height}</td>
+            <td>${data.bmi}</td>
+            <td>${data.date}</td>
+            <td>
+                <button class="btn btn-danger btn-sm delete-btn" data-id="${data.id}">Удалить</button>
+            </td>
+        `;
+        table.appendChild(newRow);
+        document.getElementById("weight").value = "";
+        document.getElementById("height").value = "";
+    });
+});
+
+document.addEventListener("click", function (e) {
+    if (e.target.classList.contains("delete-btn")) {
+        const id = e.target.dataset.id;
+
+        fetch(`/delete_record/${id}`, { method: "DELETE" })
+        .then(() => e.target.closest("tr").remove());
+    }
+});
+</script>
+{% endblock %}

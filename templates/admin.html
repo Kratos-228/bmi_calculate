@@ -1,0 +1,52 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="container">
+    <h2>Панель администратора</h2>
+    <table class="table">
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>Имя пользователя</th>
+                <th>Роль</th>
+                <th>Статус</th>
+                <th>Действия</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for user in users %}
+            <tr>
+                <td>{{ user.id }}</td>
+                <td>{{ user.username }}</td>
+                <td>{{ user.role.name }}</td>
+                <td>
+    <a href="{{ url_for('view_user_data', user_id=user.id) }}">Просмотреть данные</a>
+</td>
+
+                <td>{{ 'Забанен' if user.is_banned else 'Активен' }}</td>
+                <td>
+                    {% if user.role.name != 'super-admin' %}
+                    <form action="{{ url_for('ban_user', user_id=user.id) }}" method="post" style="display:inline;">
+                        <button class="btn btn-danger btn-sm" {% if user.is_banned %}disabled{% endif %}>Бан</button>
+                    </form>
+                    <form action="{{ url_for('unban_user', user_id=user.id) }}" method="post" style="display:inline;">
+                        <button class="btn btn-success btn-sm" {% if not user.is_banned %}disabled{% endif %}>Разбан</button>
+                    </form>
+                    {% endif %}
+                    {% if session['user_id'] == user.id or user.role.name == 'super-admin' %}
+                    <!-- Супер-админ или админ не может менять свою роль -->
+                    {% else %}
+                    <form action="{{ url_for('change_role', user_id=user.id) }}" method="post" style="display:inline;">
+                        <select name="role" class="form-select form-select-sm" style="display:inline; width: auto;">
+                            <option value="user" {% if user.role.name == 'user' %}selected{% endif %}>Пользователь</option>
+                            <option value="admin" {% if user.role.name == 'admin' %}selected{% endif %}>Администратор</option>
+                        </select>
+                        <button class="btn btn-primary btn-sm">Изменить роль</button>
+                    </form>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}
