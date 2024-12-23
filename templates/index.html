@@ -45,7 +45,6 @@
         {% endfor %}
     </tbody>
 </table>
-
 <script>
 document.getElementById("bmiForm").addEventListener("submit", function (e) {
     e.preventDefault();
@@ -60,8 +59,20 @@ document.getElementById("bmiForm").addEventListener("submit", function (e) {
         },
         body: JSON.stringify({ weight: weight, height: height })
     })
-    .then(response => response.json())
+    .then(response => {
+        if (response.status === 403) {
+            // Получаем ошибку и сразу перенаправляем на страницу входа
+            response.json().then(data => {
+                alert(data.error);  // Показываем сообщение о блокировке
+                window.location.href = '/login';  // Перенаправляем на страницу входа
+            });
+            return;  // Прекращаем дальнейшую обработку
+        }
+
+        return response.json();  // Если ошибка не 403, продолжаем обработку
+    })
     .then(data => {
+        // Если не было ошибки, продолжаем обновление таблицы
         document.getElementById("bmiResult").innerHTML = `<h4>Ваш ИМТ: ${data.bmi} (${data.category})</h4>`;
         const table = document.getElementById("bmiTable");
         const newRow = document.createElement("tr");
@@ -78,6 +89,10 @@ document.getElementById("bmiForm").addEventListener("submit", function (e) {
         table.appendChild(newRow);
         document.getElementById("weight").value = "";
         document.getElementById("height").value = "";
+    })
+    .catch(error => {
+        console.error('Ошибка:', error);
+        alert('Произошла ошибка при отправке данных.');
     });
 });
 
@@ -86,8 +101,23 @@ document.addEventListener("click", function (e) {
         const id = e.target.dataset.id;
 
         fetch(`/delete_record/${id}`, { method: "DELETE" })
-        .then(() => e.target.closest("tr").remove());
+        .then(response => {
+            if (response.status === 403) {
+                response.json().then(data => {
+                    alert(data.error);  // Показываем сообщение о блокировке
+                    window.location.href = '/login';  // Перенаправляем на страницу входа
+                });
+                return;  // Прекращаем дальнейшую обработку
+            }
+            e.target.closest("tr").remove();
+        })
+        .catch(error => {
+            console.error('Ошибка:', error);
+            alert('Произошла ошибка при удалении записи.');
+        });
     }
 });
+
+
 </script>
 {% endblock %}
