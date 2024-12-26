@@ -1,6 +1,7 @@
 from flask import Flask, render_template, request, redirect, url_for, session, flash, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from flask.logging import create_logger
+from sqlalchemy.sql.functions import current_user
 from werkzeug.security import generate_password_hash, check_password_hash
 from functools import wraps
 from datetime import datetime
@@ -15,20 +16,24 @@ log = create_logger(app)
 
 
 # Проверка блокировки перед каждым запросом
-@app.before_request
-def check_user_block_status():
-    if 'user_id' in session:
-        user = db.session.get(User, session['user_id'])
-        if user and user.is_banned:
-            # Если заблокирован администратор или супер-администратор
-            if user.role.name in ['admin', 'super-admin']:
-                session.clear()  # Очищаем сессию
-                log.info(f"Заблокированный администратор {user.username} пытался выполнить запрос.")
-                return redirect(url_for('login'))  # Перенаправление без JSON-ответа
 
-            # Если заблокирован обычный пользователь
+# Проверка блокировки перед каждым запросом
+@app.before_request
+def check_user_status():
+    if 'user_id' in session:
+        user = User.query.get(session['user_id'])
+        if user and user.is_banned:
             log.info(f"Заблокированный пользователь {user.username} пытался выполнить запрос.")
-            # Здесь оставляем все как есть
+            session.clear()  # Очистка сессии, чтобы выкинуть пользователя
+
+            # Если это API-запрос, возвращаем JSON с ошибкой
+            if request.is_json:
+                return jsonify({'error': 'Ваша учетная запись была заблокирована. Пожалуйста, свяжитесь с администратором.'}), 403
+
+            # Если это обычный запрос, перенаправляем на страницу логина
+            flash('Ваш аккаунт заблокирован. Обратитесь к администратору.', 'danger')
+            return redirect(url_for('login'))
+
 
 
 # Декоратор для проверки ролей
@@ -39,10 +44,18 @@ def role_required(roles):
             if 'user_id' not in session:
                 flash("Пожалуйста, войдите в систему.", "danger")
                 return redirect(url_for('login'))
+
             user = db.session.get(User, session['user_id'])
+
+            if user.is_banned:
+                session.clear()
+                flash("Ваш аккаунт заблокирован. Обратитесь к администратору.", "danger")
+                return redirect(url_for('login'))
+
             if user.role.name not in roles:
                 flash("У вас недостаточно прав для выполнения этого действия.", "danger")
                 return redirect(request.referrer or url_for('index'))
+
             return f(*args, **kwargs)
 
         return decorated_function
@@ -91,7 +104,7 @@ def login():
 
             # Сохраняем данные в сессию
             session['user_id'] = user.id
-            session['username'] = user.username  # Добавлено
+            session['username'] = user.username
 
             flash(f"Добро пожаловать, {user.username}!", "success")
 
@@ -118,8 +131,14 @@ def logout():
 @app.route('/admin')
 @role_required(['admin', 'super-admin'])
 def admin_panel():
-    users = User.query.options(db.joinedload(User.role)).all()
-    return render_template('admin.html', users=users)
+    current_user = get_current_user()
+    # Фильтруем список пользователей для обычных админов
+    if current_user.role.name == 'admin':
+        users = User.query.options(db.joinedload(User.role)).filter(User.role.has(Role.name != 'super-admin')).all()
+    else:
+        users = User.query.options(db.joinedload(User.role)).all()
+    return render_template('admin.html', users=users, current_user=current_user)
+
 
 
 @app.route('/admin/ban/<int:user_id>', methods=['POST'])
@@ -128,14 +147,14 @@ def ban_user(user_id):
     target_user = db.session.get(User, user_id)
     current_user = get_current_user()
 
-    if current_user.role.name == 'admin' and target_user.role.name != 'user':
-        flash("Администратор может банить только пользователей.", "danger")
+    # Проверка: админ может банить только пользователей
+    if current_user.role.name == 'admin' and target_user.role.name in ['admin', 'super-admin']:
+        flash("Администратор не может банить других администраторов или супер-администраторов.", "danger")
         return redirect(url_for('admin_panel'))
 
     target_user.is_banned = True
     db.session.commit()
 
-    # Если заблокированный пользователь залогинен
     if 'user_id' in session and session['user_id'] == target_user.id:
         session.clear()  # Очистка сессии
 
@@ -144,15 +163,24 @@ def ban_user(user_id):
     return redirect(url_for('admin_panel'))
 
 
+
 @app.route('/admin/unban/<int:user_id>', methods=['POST'])
 @role_required(['admin', 'super-admin'])
 def unban_user(user_id):
     target_user = db.session.get(User, user_id)
+    current_user = get_current_user()
+
+    # Проверка: админ может разбанивать только пользователей
+    if current_user.role.name == 'admin' and target_user.role.name in ['admin', 'super-admin']:
+        flash("Администратор не может разбанивать других администраторов или супер-администраторов.", "danger")
+        return redirect(url_for('admin_panel'))
+
     target_user.is_banned = False
     db.session.commit()
     log.info(f"Пользователь {target_user.username} разбанен.")
     flash(f"Пользователь {target_user.username} разбанен.", "success")
     return redirect(url_for('admin_panel'))
+
 
 
 @app.route('/admin/change_role/<int:user_id>', methods=['POST'])
@@ -175,8 +203,16 @@ def change_role(user_id):
 @role_required(['admin', 'super-admin'])
 def view_user_data(user_id):
     target_user = db.session.get(User, user_id)
+    current_user = get_current_user()
+
+    # Проверка: администратор не может просматривать данные супер-администратора
+    if current_user.role.name == 'admin' and target_user.role.name == 'super-admin':
+        flash("У вас нет прав для просмотра данных супер-администратора.", "danger")
+        return redirect(url_for('admin_panel'))  # Перенаправляем на панель администратора
+
     records = BMIRecord.query.filter_by(user_id=user_id).all()
     return render_template('view_user.html', user=target_user, records=records)
+
 
 
 @app.route('/admin/delete_record/<int:record_id>', methods=['POST'])
@@ -209,29 +245,53 @@ def calculate_bmi():
     user_id = session['user_id']
     user = db.session.get(User, user_id)
 
-    if user and user.is_banned:  # Проверка, заблокирован ли пользователь
-        session.clear()  # Очистка сессии
-        return jsonify({'error': 'Ваша учетная запись была заблокирована. Пожалуйста, свяжитесь с администратором.'}), 403
+    # Проверяем, заблокирован ли пользователь
+    if user and user.is_banned:
+        session.clear()
+        if request.is_json:
+            return jsonify({'error': 'Ваша учетная запись была заблокирована. Пожалуйста, свяжитесь с администратором.'}), 403
+        flash('Ваш аккаунт заблокирован. Обратитесь к администратору.', 'danger')
+        return redirect(url_for('login'))
 
-    data = request.get_json()
-    weight = float(data.get('weight'))
-    height_cm = float(data.get('height'))
-    height_m = height_cm / 100
-    bmi = round(weight / (height_m ** 2), 2)
-    bmi_category = get_bmi_category(bmi)
+    # Ваш код для расчета BMI здесь...
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'error': 'Данные не предоставлены.'}), 400
 
-    new_record = BMIRecord(user_id=user_id, weight=weight, height=height_m, bmi=bmi)
-    db.session.add(new_record)
-    db.session.commit()
+        weight = float(data.get('weight', 0))
+        height_cm = float(data.get('height', 0))
 
-    return jsonify({
-        'id': new_record.id,
-        'weight': weight,
-        'height': round(height_m, 2),
-        'bmi': bmi,
-        'category': bmi_category,
-        'date': new_record.created_at.strftime('%Y-%m-%d')
-    })
+        # Проверка на валидность данных
+        if weight <= 0 or height_cm <= 0:
+            return jsonify({'error': 'Вес и рост должны быть положительными числами.'}), 400
+
+        # Расчет BMI
+        height_m = height_cm / 100
+        bmi = round(weight / (height_m ** 2), 2)
+        bmi_category = get_bmi_category(bmi)
+
+        # Создание новой записи
+        new_record = BMIRecord(user_id=user_id, weight=weight, height=height_m, bmi=bmi)
+        db.session.add(new_record)
+        db.session.commit()
+
+        return jsonify({
+            'id': new_record.id,
+            'weight': weight,
+            'height': round(height_m, 2),
+            'bmi': bmi,
+            'category': bmi_category,
+            'date': new_record.created_at.strftime('%Y-%m-%d')
+        })
+    except (TypeError, ValueError) as e:
+        return jsonify({'error': 'Введите корректные числовые значения для веса и роста.'}), 400
+    except Exception as e:
+        # Общий обработчик неожиданных ошибок
+        return jsonify({'error': 'Произошла ошибка на сервере. Попробуйте позже.'}), 500
+
+
+
 
 
 @app.route('/delete_record/<int:id>', methods=['DELETE'])
@@ -242,17 +302,23 @@ def delete_record(id):
     user_id = session['user_id']
     user = db.session.get(User, user_id)
 
-    if user and user.is_banned:  # Проверка, заблокирован ли пользователь
-        session.clear()  # Очистка сессии
-        return jsonify({'error': 'Your account has been banned. Please contact an administrator.'}), 403
+    # Проверяем, заблокирован ли пользователь
+    if user and user.is_banned:
+        session.clear()
+        return jsonify({'error': 'Ваш аккаунт заблокирован. Пожалуйста, свяжитесь с администратором.'}), 403
 
     record = db.session.get(BMIRecord, id)
+    if not record:
+        return jsonify({'error': 'Запись не найдена'}), 404
+
     if record.user_id != user_id:
-        return jsonify({'error': 'Forbidden'}), 403
+        return jsonify({'error': 'Запрещено'}), 403
 
     db.session.delete(record)
     db.session.commit()
-    return jsonify({'success': True})
+    return jsonify({'success': True}), 200
+
+
 
 
 def get_bmi_category(bmi):
